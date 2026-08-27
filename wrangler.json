@@ -1,14 +1,14 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "silence-nize",
-	"main": "src/index.ts",
+	"main": "src/index.js",
 	"compatibility_date": "2025-10-08",
 	"upload_source_maps": true,
 	"migrations": [
 		{
-			"tag": "v1",
-			"deleted_classes": ["MyDurableObject"],
-			"new_classes": ["TunnelHub"]
+			"tag": "v2",
+			"new_classes": ["TunnelHub"],
+			"deleted_classes": ["MyDurableObject"]
 		}
 	],
 	"durable_objects": {
