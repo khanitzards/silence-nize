@@ -4,10 +4,11 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-08",
 	"upload_source_maps": true,
-		"migrations": [
+	"migrations": [
 		{
-			"new_classes": ["TunnelHub"],
-			"tag": "v2"
+			"tag": "v1",
+			"deleted_classes": ["MyDurableObject"],
+			"new_classes": ["TunnelHub"]
 		}
 	],
 	"durable_objects": {
