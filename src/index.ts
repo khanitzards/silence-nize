@@ -1,71 +1,206 @@
 import { DurableObject } from "cloudflare:workers";
 
-/**
- * Welcome to Cloudflare Workers! This is your first Durable Objects application.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your Durable Object in action
- * - Run `npm run deploy` to publish your application
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/durable-objects
- */
+// ==========================================================
+// 1. Durable Object Class (Global State Management)
+// ==========================================================
+export class TunnelHub {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.activeTunnels = new Map();     // tunnelId -> WebSocket
+    this.dynamicRouteTable = new Map(); // routePath -> tunnelId
+    this.pendingRequests = new Map();   // requestId -> { resolve, reject, timeoutId }
+  }
 
-/** A Durable Object's behavior is defined in an exported Javascript class */
-export class MyDurableObject extends DurableObject<Env> {
-	/**
-	 * The constructor is invoked once upon creation of the Durable Object, i.e. the first call to
-	 * 	`DurableObjectStub::get` for a given identifier (no-op constructors can be omitted)
-	 *
-	 * @param ctx - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 */
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-	}
+  async fetch(request) {
+    const url = new URL(request.url);
 
-	/**
-	 * The Durable Object exposes an RPC method sayHello which will be invoked when a Durable
-	 *  Object instance receives a request from a Worker via the same method invocation on the stub
-	 *
-	 * @returns The greeting to be sent back to the Worker
-	 */
-	async sayHello(): Promise<string> {
-		let result = this.ctx.storage.sql
-			.exec("SELECT 'Hello, World!' as greeting")
-			.one() as { greeting: string };
-		return result.greeting;
-	}
+    // ------------------------------------------------------
+    // 1.1 รับการเชื่อมต่อ WebSocket จาก C++ Tunnel Client
+    // ------------------------------------------------------
+    if (url.pathname === "/_tunnel") {
+      const upgradeHeader = request.headers.get("Upgrade");
+      if (upgradeHeader !== "websocket") {
+        return new Response("Expected Upgrade: websocket", { status: 426 });
+      }
+
+      const pair = new WebSocketPair();
+      const [client, server] = [pair[0], pair[1]];
+      server.accept();
+
+      let registeredTunnelId = null;
+
+      server.addEventListener("message", async (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          // จัดการการลงทะเบียน Route จาก C++ Tunnel
+          if (data.type === "register") {
+            const token = data.secret_token;
+            const expectedToken = this.env.TUNNEL_SECRET || "super_secret_hash_123";
+            
+            if (token !== expectedToken) {
+              server.send(JSON.stringify({ type: "error", message: "Unauthorized" }));
+              server.close(1008, "Unauthorized");
+              return;
+            }
+
+            registeredTunnelId = data.tunnelId;
+            this.activeTunnels.set(registeredTunnelId, server);
+
+            if (Array.isArray(data.routes)) {
+              for (const route of data.routes) {
+                this.dynamicRouteTable.set(route, registeredTunnelId);
+              }
+            }
+            console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, Routes:`, data.routes);
+          }
+          
+          // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
+          else if (data.type === "http_response") {
+            const reqId = data.requestId;
+            if (this.pendingRequests.has(reqId)) {
+              const { resolve, timeoutId } = this.pendingRequests.get(reqId);
+              clearTimeout(timeoutId);
+              this.pendingRequests.delete(reqId);
+
+              const headers = data.headers || { "Content-Type": "application/json" };
+              resolve(new Response(data.body, {
+                status: data.status || 200,
+                headers: headers
+              }));
+            }
+          }
+        } catch (err) {
+          console.error("DO Message Parse Error:", err);
+        }
+      });
+
+      const cleanup = () => {
+        if (registeredTunnelId) {
+          this.activeTunnels.delete(registeredTunnelId);
+          for (const [path, tId] of this.dynamicRouteTable.entries()) {
+            if (tId === registeredTunnelId) {
+              this.dynamicRouteTable.delete(path);
+            }
+          }
+          console.log(`[DO Tunnel Disconnected] ID: ${registeredTunnelId}`);
+        }
+      };
+
+      server.addEventListener("close", cleanup);
+      server.addEventListener("error", cleanup);
+
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // ------------------------------------------------------
+    // 1.2 รับ HTTP Request จาก Worker หลัก แล้วส่งผ่าน WebSocket
+    // ------------------------------------------------------
+    if (url.pathname === "/_proxy") {
+      const reqData = await request.json();
+      const pathname = reqData.pathname;
+
+      // ค้นหา Route แบบ Prefix Matching (เรียงจากยาวไปสั้น)
+      let targetTunnelId = null;
+      const sortedRoutes = Array.from(this.dynamicRouteTable.keys()).sort((a, b) => b.length - a.length);
+      for (const route of sortedRoutes) {
+        if (pathname.startsWith(route)) {
+          targetTunnelId = this.dynamicRouteTable.get(route);
+          break;
+        }
+      }
+
+      if (!targetTunnelId) {
+        return new Response(JSON.stringify({
+          error: "Not Found: No active tunnel handles this route.",
+          diagnostics: {
+            activeTunnelsCount: this.activeTunnels.size,
+            registeredRoutes: Array.from(this.dynamicRouteTable.keys()),
+            requestedPath: pathname
+          }
+        }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+
+      const tunnelWs = this.activeTunnels.get(targetTunnelId);
+      if (!tunnelWs || tunnelWs.readyState !== 1) {
+        return new Response(JSON.stringify({ error: `Bad Gateway: Tunnel '${targetTunnelId}' is offline.` }), { status: 502 });
+      }
+
+      // สร้าง Promise รอรับค่า Response ขา戻กลับจาก C++
+      return new Promise(async (resolve) => {
+        const requestId = reqData.requestId;
+        
+        const timeoutId = setTimeout(() => {
+          if (this.pendingRequests.has(requestId)) {
+            this.pendingRequests.delete(requestId);
+            resolve(new Response(JSON.stringify({ error: "Gateway Timeout: Local C++ server did not respond." }), { status: 504 }));
+          }
+        }, 30000);
+
+        this.pendingRequests.set(requestId, { resolve, timeoutId });
+
+        const payload = {
+          type: "http_request",
+          requestId: requestId,
+          method: reqData.method,
+          path: pathname + reqData.search,
+          headers: reqData.headers,
+          body: reqData.body
+        };
+
+        try {
+          tunnelWs.send(JSON.stringify(payload));
+        } catch (err) {
+          clearTimeout(timeoutId);
+          this.pendingRequests.delete(requestId);
+          resolve(new Response(JSON.stringify({ error: "Internal Server Error: Websocket write failed." }), { status: 500 }));
+        }
+      });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
 }
 
+// ==========================================================
+// 2. Worker Entrypoint (Global Router)
+// ==========================================================
 export default {
-	/**
-	 * This is the standard fetch handler for a Cloudflare Worker
-	 *
-	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 * @param ctx - The execution context of the Worker
-	 * @returns The response to be sent back to the client
-	 */
-	async fetch(request, env, ctx): Promise<Response> {
-		// Create a `DurableObjectId` for an instance of the `MyDurableObject`
-		// class. The name of class is used to identify the Durable Object.
-		// Requests from all Workers to the instance named
-		// will go to a single globally unique Durable Object instance.
-		const id: DurableObjectId = env.MY_DURABLE_OBJECT.idFromName(
-			new URL(request.url).pathname,
-		);
+  async fetch(request, env, ctx) {
+    // ดึง Durable Object Instance ออกมา (ใช้ ID คงที่ เพื่อให้ทุก Edge Node ชี้มาที่ Hub ตัวเดียวกัน)
+    const id = env.TUNNEL_HUB.idFromName("global_tunnel_hub");
+    const stub = env.TUNNEL_HUB.get(id);
 
-		// Create a stub to open a communication channel with the Durable
-		// Object instance.
-		const stub = env.MY_DURABLE_OBJECT.get(id);
+    const url = new URL(request.url);
 
-		// Call the `sayHello()` RPC method on the stub to invoke the method on
-		// the remote Durable Object instance
-		const greeting = await stub.sayHello();
+    // หากเป็นการเชื่อมต่อ Tunnel หรือ Request Proxy ให้ส่งต่อไปยัง Durable Object ทั้งหมด
+    if (url.pathname === "/_tunnel") {
+      return stub.fetch(request);
+    }
 
-		return new Response(greeting);
-	},
-} satisfies ExportedHandler<Env>;
+    // สำหรับ Request ทั่วไปจาก Browser นำมาแปลงร่างแล้วส่งเข้า Durable Object
+    let bodyData = null;
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      bodyData = await request.text();
+    }
+
+    const proxyRequestData = {
+      method: request.method,
+      pathname: url.pathname,
+      search: url.search,
+      headers: Object.fromEntries(request.headers.entries()),
+      body: bodyData,
+      requestId: crypto.randomUUID()
+    };
+
+    // ส่งต่อไปยัง DO ผ่าน Internal Fetch
+    const doResponse = await stub.fetch(new Request("https://internal/_proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proxyRequestData)
+    }));
+
+    return doResponse;
+  }
+};
