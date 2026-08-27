@@ -3,13 +3,7 @@
 	"name": "silence-nize",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-10-08",
-	"upload_source_maps": true,
-	"migrations": [
-		{
-			"new_sqlite_classes": ["TunnelHub"],
-			"tag": "v1"
-		}
-	],
+	"upload_source_maps": true,	
 	"durable_objects": {
 		"bindings": [
 			{
