@@ -54,8 +54,7 @@ export class TunnelHub {
               }
             }
             console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, Routes:`, data.routes);
-          }
-          
+          }          
           // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
           else if (data.type === "http_response") {
             const reqId = data.requestId;
