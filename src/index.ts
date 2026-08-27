@@ -64,10 +64,16 @@ export class TunnelHub {
               clearTimeout(timeoutId);
               this.pendingRequests.delete(reqId);
 
-              const headers = data.headers || { "Content-Type": "application/json" };
+              // 🛠️ แก้ไขจุดนี้: แปลง Header จาก C++ ให้ให้อยู่ในรูปแบบที่ Response ของ Workers ยอมรับ
+              const rawHeaders = data.headers || { "Content-Type": "text/html; charset=UTF-8" };
+              const responseHeaders = new Headers();
+              for (const [key, value] of Object.entries(rawHeaders)) {
+                responseHeaders.set(key, value);
+              }
+
               resolve(new Response(data.body, {
                 status: data.status || 200,
-                headers: headers
+                headers: responseHeaders // ส่ง Header ที่ถูกต้องกลับหา Browser
               }));
             }
           }
