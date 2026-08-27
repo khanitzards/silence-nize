@@ -3,7 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 // ==========================================================
 // 1. Durable Object Class (Global State Management)
 // ==========================================================
-export class MyDurableObject {
+export class TunnelHub {
   constructor(state, env) {
     this.state = state;
     this.env = env;
