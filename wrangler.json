@@ -1,9 +1,16 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "silence-nize",
-	"main": "src/index.ts",
+	"main": "src/index.js",
 	"compatibility_date": "2025-10-08",
-	"upload_source_maps": true,	
+	"upload_source_maps": true,
+	"migrations": [
+		{
+			"tag": "v1",
+			"deleted_classes": ["MyDurableObject"],
+			"new_classes": ["TunnelHub"]
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{
@@ -11,6 +18,9 @@
 				"name": "TUNNEL_HUB"
 			}
 		]
+	},
+	"vars": {
+		"TUNNEL_SECRET": "super_secret_hash_123"
 	},
 	"observability": {
 		"enabled": true
