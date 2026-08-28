@@ -111,7 +111,7 @@ export class TunnelHub {
       const sortedRoutes = Array.from(this.dynamicRouteTable.keys()).sort((a, b) => b.length - a.length);
       for (const route of sortedRoutes) {
         if (pathname.startsWith(route)) {
-          targetTunnelId = this.dynamicRouteTable.get(route);
+          const cleanRoute = route.endsWith('*') ? route.slice(0, -1) : route;
           break;
         }
       }
