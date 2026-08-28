@@ -105,12 +105,16 @@ export class TunnelHub {
     if (url.pathname === "/_proxy") {
       const reqData = await request.json();
       const pathname = reqData.pathname;
-
-      // ค้นหา Route แบบ Prefix Matching (เรียงจากยาวไปสั้น)
+      
+      // ค้นหา Route แบบ Prefix Matching ที่รองรับเครื่องหมาย *
       let targetTunnelId = null;
       const sortedRoutes = Array.from(this.dynamicRouteTable.keys()).sort((a, b) => b.length - a.length);
+      
       for (const route of sortedRoutes) {
-        if (pathname.startsWith(route)) {
+        // ตัดเครื่องหมาย * ทิ้ง (ถ้ามี) ก่อนนำมาเทียบ
+        const cleanRoute = route.endsWith('*') ? route.slice(0, -1) : route;
+
+        if (pathname.startsWith(cleanRoute)) {
           targetTunnelId = this.dynamicRouteTable.get(route);
           break;
         }
@@ -119,11 +123,7 @@ export class TunnelHub {
       if (!targetTunnelId) {
         return new Response(JSON.stringify({
           error: "Not Found: No active tunnel handles this route.",
-          diagnostics: {
-            activeTunnelsCount: this.activeTunnels.size,
-            registeredRoutes: Array.from(this.dynamicRouteTable.keys()),
-            requestedPath: pathname
-          }
+          requestedPath: pathname // 🛠️ ตัด object diagnostics ออก ให้แสดงเฉพาะ path ที่เรียกเข้ามา
         }), { status: 404, headers: { "Content-Type": "application/json" } });
       }
 
