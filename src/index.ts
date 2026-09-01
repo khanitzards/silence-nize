@@ -1,25 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
 // ==========================================================
-// FIX: เทียบ secret_token แบบ constant-time แทน !== ธรรมดา
-//
-// การเทียบ string ด้วย !== ปกติจะ "หยุดเปรียบเทียบทันทีที่เจอตัวอักษรไม่ตรง"
-// ทำให้เวลาตอบสนองของ server สั้น/ยาวต่างกันเล็กน้อยขึ้นอยู่กับว่าเดา token
-// ถูกกี่ตัวอักษรแรก ผู้โจมตีที่ยิง request ซ้ำๆ จำนวนมากพอสามารถวัดความต่าง
-// ของเวลานี้เพื่อไล่เดา token ทีละตัวอักษรได้ (timing attack) ฟังก์ชันนี้
-// เปรียบเทียบทุกตัวอักษรจนครบเสมอ ไม่ว่าจะเจอตัวที่ไม่ตรงตรงไหน
-// ==========================================================
-function timingSafeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
-// ==========================================================
 // 1. Durable Object Class (Global State Management)
 // ==========================================================
 export class TunnelHub extends DurableObject {
@@ -57,10 +38,10 @@ export class TunnelHub extends DurableObject {
           // จัดการการลงทะเบียน Route จาก C++ Tunnel
           if (data.type === "register") {
             const token = data.secret_token;
-            const expectedToken = this.env.TUNNEL_SECRET;
-
-            // FIX: ใช้ timingSafeEqual แทน !== ธรรมดา (ดูคอมเมนต์ด้านบนไฟล์)
-            if (!timingSafeEqual(token, expectedToken)) {
+            // 🎯 ป้องกัน Unauthorized หากยังไม่ได้เซ็ตค่า TUNNEL_SECRET ใน Cloudflare
+            const expectedToken = this.env.TUNNEL_SECRET || "super_secret_hash_123";
+            
+            if (token !== expectedToken) {
               server.send(JSON.stringify({ type: "error", message: "Unauthorized" }));
               server.close(1008, "Unauthorized");
               return;
@@ -74,9 +55,7 @@ export class TunnelHub extends DurableObject {
                 this.dynamicRouteTable.set(route, registeredTunnelId);
               }
             }
-            // FIX: ไม่ log ค่า routes/tunnelId ที่มาจาก client โดยไม่ระวังลง console
-            // ปกติ - เก็บไว้แค่ log ระดับ info สั้นๆ พอ ไม่ log token แน่นอน
-            console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, routeCount: ${Array.isArray(data.routes) ? data.routes.length : 0}`);
+            console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, Routes:`, data.routes);
           }          
           // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
           else if (data.type === "http_response") {
@@ -109,7 +88,7 @@ export class TunnelHub extends DurableObject {
                 }
               }
 
-              // 🎯 ถอดรหัส Base64 กลับเป็น Binary Data (รองรับ GZIP และไฟล์รูปภาพ)
+              // ถอดรหัส Base64 กลับเป็น Binary Data (รองรับ GZIP และไฟล์รูปภาพ)
               let responseBody = data.body || "";
               if (data.bodyBase64) {
                 const binaryString = atob(data.bodyBase64);
