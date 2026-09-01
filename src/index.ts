@@ -38,7 +38,7 @@ export class TunnelHub extends DurableObject {
           // จัดการการลงทะเบียน Route จาก C++ Tunnel
           if (data.type === "register") {
             const token = data.secret_token;
-            const expectedToken = this.env.TUNNEL_SECRET || "super_secret_hash_123";
+            const expectedToken = this.env.TUNNEL_SECRET;
             
             if (token !== expectedToken) {
               server.send(JSON.stringify({ type: "error", message: "Unauthorized" }));
