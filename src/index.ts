@@ -3,8 +3,9 @@ import { DurableObject } from "cloudflare:workers";
 // ==========================================================
 // 1. Durable Object Class (Global State Management)
 // ==========================================================
-export class TunnelHub {
+export class TunnelHub extends DurableObject {
   constructor(state, env) {
+    super(state, env);
     this.state = state;
     this.env = env;
     this.activeTunnels = new Map();     // tunnelId -> WebSocket
@@ -63,16 +64,34 @@ export class TunnelHub {
               clearTimeout(timeoutId);
               this.pendingRequests.delete(reqId);
 
-              // 🛠️ แก้ไขจุดนี้: แปลง Header จาก C++ ให้ให้อยู่ในรูปแบบที่ Response ของ Workers ยอมรับ
+              // 🛠️ ปรับปรุงการจัดการ Headers และ Set-Cookie ให้รองรับ Array/Single values
               const rawHeaders = data.headers || { "Content-Type": "text/html; charset=UTF-8" };
               const responseHeaders = new Headers();
+
               for (const [key, value] of Object.entries(rawHeaders)) {
-                responseHeaders.set(key, value);
+                if (key.toLowerCase() === "set-cookie") {
+                  if (Array.isArray(value)) {
+                    for (const cookie of value) {
+                      responseHeaders.append("Set-Cookie", cookie);
+                    }
+                  } else {
+                    responseHeaders.append("Set-Cookie", value);
+                  }
+                } else {
+                  // สำหรับ Header ทั่วไป หากเป็น Array ให้วนลูป append หรือเซ็ตค่าปกติ
+                  if (Array.isArray(value)) {
+                    for (const v of value) {
+                      responseHeaders.append(key, v);
+                    }
+                  } else {
+                    responseHeaders.set(key, value);
+                  }
+                }
               }
 
               resolve(new Response(data.body, {
                 status: data.status || 200,
-                headers: responseHeaders // ส่ง Header ที่ถูกต้องกลับหา Browser
+                headers: responseHeaders // ส่ง Headers และ Set-Cookie กลับหา Browser ครบถ้วน
               }));
             }
           }
@@ -111,7 +130,6 @@ export class TunnelHub {
       const sortedRoutes = Array.from(this.dynamicRouteTable.keys()).sort((a, b) => b.length - a.length);
       
       for (const route of sortedRoutes) {
-        // ตัดเครื่องหมาย * ทิ้ง (ถ้ามี) ก่อนนำมาเทียบ
         const cleanRoute = route.endsWith('*') ? route.slice(0, -1) : route;
 
         if (pathname.startsWith(cleanRoute)) {
@@ -123,7 +141,7 @@ export class TunnelHub {
       if (!targetTunnelId) {
         return new Response(JSON.stringify({
           error: "Not Found: No active tunnel handles this route.",
-          requestedPath: pathname // 🛠️ ตัด object diagnostics ออก ให้แสดงเฉพาะ path ที่เรียกเข้ามา
+          requestedPath: pathname
         }), { status: 404, headers: { "Content-Type": "application/json" } });
       }
 
@@ -132,7 +150,7 @@ export class TunnelHub {
         return new Response(JSON.stringify({ error: `Bad Gateway: Tunnel '${targetTunnelId}' is offline.` }), { status: 502 });
       }
 
-      // สร้าง Promise รอรับค่า Response ขา戻กลับจาก C++
+      // สร้าง Promise รอรับค่า Response ขากลับจาก C++
       return new Promise(async (resolve) => {
         const requestId = reqData.requestId;
         
@@ -173,18 +191,15 @@ export class TunnelHub {
 // ==========================================================
 export default {
   async fetch(request, env, ctx) {
-    // ดึง Durable Object Instance ออกมา (ใช้ ID คงที่ เพื่อให้ทุก Edge Node ชี้มาที่ Hub ตัวเดียวกัน)
     const id = env.TUNNEL_HUB.idFromName("global_tunnel_hub");
     const stub = env.TUNNEL_HUB.get(id);
 
     const url = new URL(request.url);
 
-    // หากเป็นการเชื่อมต่อ Tunnel หรือ Request Proxy ให้ส่งต่อไปยัง Durable Object ทั้งหมด
     if (url.pathname === "/_tunnel") {
       return stub.fetch(request);
     }
 
-    // สำหรับ Request ทั่วไปจาก Browser นำมาแปลงร่างแล้วส่งเข้า Durable Object
     let bodyData = null;
     if (request.method !== "GET" && request.method !== "HEAD") {
       bodyData = await request.text();
@@ -199,7 +214,6 @@ export default {
       requestId: crypto.randomUUID()
     };
 
-    // ส่งต่อไปยัง DO ผ่าน Internal Fetch
     const doResponse = await stub.fetch(new Request("https://internal/_proxy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
