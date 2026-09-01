@@ -57,7 +57,6 @@ export class TunnelHub extends DurableObject {
             console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, Routes:`, data.routes);
           }          
           // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
-          // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
           else if (data.type === "http_response") {
             const reqId = data.requestId;
             if (this.pendingRequests.has(reqId)) {
@@ -88,7 +87,7 @@ export class TunnelHub extends DurableObject {
                 }
               }
 
-              // 🎯 💡 เพิ่มส่วนถอดรหัส Base64 ให้กลับเป็น Binary Data
+              // 🎯 ถอดรหัส Base64 กลับเป็น Binary Data (รองรับ GZIP และไฟล์รูปภาพ)
               let responseBody = data.body || "";
               if (data.bodyBase64) {
                 const binaryString = atob(data.bodyBase64);
@@ -97,7 +96,7 @@ export class TunnelHub extends DurableObject {
                 for (let i = 0; i < len; i++) {
                   bytes[i] = binaryString.charCodeAt(i);
                 }
-                responseBody = bytes; // ส่งคืนเป็น Uint8Array (รองรับ Binary เต็มรูปแบบ)
+                responseBody = bytes;
               }
 
               resolve(new Response(responseBody, {
