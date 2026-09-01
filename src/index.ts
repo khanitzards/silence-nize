@@ -57,6 +57,7 @@ export class TunnelHub extends DurableObject {
             console.log(`[DO Tunnel Registered] ID: ${registeredTunnelId}, Routes:`, data.routes);
           }          
           // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
+          // จัดการ Response ที่ C++ ส่งกลับมาเพื่อตอบสนอง Browser
           else if (data.type === "http_response") {
             const reqId = data.requestId;
             if (this.pendingRequests.has(reqId)) {
@@ -64,7 +65,6 @@ export class TunnelHub extends DurableObject {
               clearTimeout(timeoutId);
               this.pendingRequests.delete(reqId);
 
-              // 🛠️ ปรับปรุงการจัดการ Headers และ Set-Cookie ให้รองรับ Array/Single values
               const rawHeaders = data.headers || { "Content-Type": "text/html; charset=UTF-8" };
               const responseHeaders = new Headers();
 
@@ -78,7 +78,6 @@ export class TunnelHub extends DurableObject {
                     responseHeaders.append("Set-Cookie", value);
                   }
                 } else {
-                  // สำหรับ Header ทั่วไป หากเป็น Array ให้วนลูป append หรือเซ็ตค่าปกติ
                   if (Array.isArray(value)) {
                     for (const v of value) {
                       responseHeaders.append(key, v);
@@ -89,9 +88,21 @@ export class TunnelHub extends DurableObject {
                 }
               }
 
-              resolve(new Response(data.body, {
+              // 🎯 💡 เพิ่มส่วนถอดรหัส Base64 ให้กลับเป็น Binary Data
+              let responseBody = data.body || "";
+              if (data.bodyBase64) {
+                const binaryString = atob(data.bodyBase64);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                  bytes[i] = binaryString.charCodeAt(i);
+                }
+                responseBody = bytes; // ส่งคืนเป็น Uint8Array (รองรับ Binary เต็มรูปแบบ)
+              }
+
+              resolve(new Response(responseBody, {
                 status: data.status || 200,
-                headers: responseHeaders // ส่ง Headers และ Set-Cookie กลับหา Browser ครบถ้วน
+                headers: responseHeaders
               }));
             }
           }
